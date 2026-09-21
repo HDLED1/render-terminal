@@ -10,31 +10,51 @@ console.log("Servidor WebSocket rodando na porta " + PORT);
 wss.on('connection', (ws) => {
     console.log("Novo cliente conectado!");
 
-    // Define o shell
-    const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
+    const shell = os.platform() === 'win32' ? 'powershell.exe' : (process.env.SHELL || 'bash');
 
-    // Cria o pseudo-terminal (PTY)
-    const ptyProcess = pty.spawn(shell, [], {
-        name: 'xterm-color',
-        cols: 80,
-        rows: 24,
-        cwd: process.env.HOME || '/root',
-        env: process.env
-    });
+    let ptyProcess;
+    try {
+        ptyProcess = pty.spawn(shell, [], {
+            name: 'xterm-color',
+            cols: 80,
+            rows: 24,
+            cwd: process.env.HOME || '/root',
+            env: process.env
+        });
+    } catch (err) {
+        console.error("Erro ao iniciar o PTY:", err);
+        ws.send("\r\nErro ao iniciar o terminal no servidor.\r\n");
+        ws.close();
+        return;
+    }
 
-    // 1. LER DO TERMINAL -> ENVIAR PARA O FRONTEND
+    // LER DO TERMINAL -> ENVIAR PARA O FRONTEND
     ptyProcess.onData((data) => {
-        ws.send(data);
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(data);
+        }
     });
 
-    // 2. LER DO FRONTEND -> ENVIAR PARA O TERMINAL
+    // LER DO FRONTEND -> ENVIAR PARA O TERMINAL
     ws.on('message', (message) => {
         ptyProcess.write(message.toString());
     });
 
-    // 3. LIMPEZA QUANDO O USUÁRIO FECHAR A ABA
+    // TRATAR ENCERRAMENTO DO PROCESSO DO TERMINAL
+    ptyProcess.onExit(({ exitCode }) => {
+        console.log(`Processo PTY encerrou com código ${exitCode}`);
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.close();
+        }
+    });
+
+    // LIMPEZA QUANDO O USUÁRIO FECHAR A ABA OU DESCONECTAR
     ws.on('close', () => {
         console.log("Cliente desconectado. Encerrando o processo PTY...");
-        ptyProcess.kill();
+        try {
+            ptyProcess.kill();
+        } catch (e) {
+            // Ignora se já estiver morto
+        }
     });
 });
